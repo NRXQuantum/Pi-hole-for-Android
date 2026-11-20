@@ -9,12 +9,87 @@
 # Description: android-raspbian
 ### END INIT INFO
 
+# Always run from a sane directory.  Linux Deploy may start init scripts
+# with a working directory (usually /root) that service accounts cannot
+# access, which makes tools such as find(1) fail.
+cd /
+
+# Remove a pid file when the process it refers to is gone (or when the
+# pid was recycled by an unrelated process).  /run is persistent in this
+# container, so stale pid files otherwise survive across app restarts.
+clean_pidfile() {
+        pidfile="$1"
+        name="$2"
+        [ -f "$pidfile" ] || return 0
+        pid="$(cat "$pidfile" 2>/dev/null)"
+        if [ -z "$pid" ] || [ ! -d "/proc/$pid" ] || \
+           ! tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -q "$name"; then
+                rm -f "$pidfile"
+        fi
+}
+
+# Generate missing SSH host keys.  dpkg-reconfigure is not present in this
+# stripped-down image, so the old first-boot logic never created any keys
+# and dropbear refused to start ("No hostkeys available").
+ensure_host_keys() {
+        mkdir -p /etc/dropbear
+        chmod 700 /etc/dropbear
+        for keytype in rsa ecdsa ed25519; do
+                keyfile="/etc/dropbear/dropbear_${keytype}_host_key"
+                [ -s "$keyfile" ] || \
+                        dropbearkey -t "$keytype" -f "$keyfile" >>/tmp/p4a.log 2>&1
+        done
+        if command -v ssh-keygen >/dev/null 2>&1; then
+                ssh-keygen -A >>/tmp/p4a.log 2>&1
+        fi
+}
+
+# Generate the self-signed TLS certificate used by xrdp.  sysprep (and the
+# published image) removes it, but the provisioning block that used to
+# recreate it is skipped once unbound is installed.
+ensure_tls_cert() {
+        cert="/etc/ssl/certs/ssl-cert-snakeoil.pem"
+        key="/etc/ssl/private/ssl-cert-snakeoil.key"
+        if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
+                mkdir -p /etc/ssl/certs /etc/ssl/private
+                rm -f "$cert" "$key"
+                openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+                        -subj "/C=US/ST=Local/L=Local/O=Pi-hole for Android/CN=${hstnm:-pihole}.local" \
+                        -keyout "$key" -out "$cert" >>/tmp/p4a.log 2>&1
+        fi
+        chown root:xrdp "$cert" "$key" 2>/dev/null
+        chmod 0660 "$cert" "$key" 2>/dev/null
+        # xrdp runs as the unprivileged xrdp user, so it must be able to
+        # traverse /etc/ssl/private (Debian's default group is ssl-cert).
+        chown root:xrdp /etc/ssl/private 2>/dev/null
+        chmod 0710 /etc/ssl/private 2>/dev/null
+        if getent passwd xrdp >/dev/null 2>&1; then
+                adduser xrdp ssl-cert >>/tmp/p4a.log 2>&1
+        fi
+}
+
 case "$1" in
 start)
         # some devices have hidepid=2 set
         mount -o remount,rw,hidepid=0 /proc
         echo 2 | tee /proc/sys/abi/cp15_barrier >/tmp/p4a.log 2>&1
         dbus-uuidgen --ensure
+        # /run is not a tmpfs in this container and survives app restarts,
+        # so clear stale runtime state left behind by the previous session.
+        mkdir -p /run/xrdp /run/dbus
+        install -d -m 0755 -o pihole -g pihole /run/pihole 2>/dev/null
+        install -d -m 0755 -o avahi  -g avahi  /run/avahi-daemon 2>/dev/null
+        clean_pidfile /run/dropbear.pid dropbear
+        clean_pidfile /run/xrdp/xrdp.pid xrdp
+        clean_pidfile /run/xrdp/xrdp-sesman.pid xrdp-sesman
+        clean_pidfile /run/crond.pid cron
+        clean_pidfile /run/avahi-daemon/pid avahi-daemon
+        rm -f /run/crond.reboot
+        # Recreate the D-Bus runtime directory in case it was removed by
+        # the clean-up below (dbus-daemon also does this itself).
+        chown messagebus:messagebus /run/dbus 2>/dev/null
+        # No dropbear key generation here: done unconditionally below.
+        rm -rf /usr/lib/systemd/system/xrdp*
         # Allow daemons to listen on network
         sed -i "/aid_inet/c\aid_inet:x:3003:android,root,messagebus,pihole,unbound,xrdp,sshd,avahi,postfix,postdrop,redis,www-data,ncp,prometheus,sambashare,mysql,_apt" /etc/group
         usermod -a -G aid_net_bt,aid_net_bt_admin,aid_net_admin,aid_net_raw,aid_inet root
@@ -25,7 +100,10 @@ start)
         device=$(ip route list table main | tail -n1 | cut -d' ' -f 3)
         ipaddr=$(ip route list table main | tail -n1) ; ipaddr=`echo $ipaddr | awk -F' ' ' { print $(NF-0) } '`
         gateway=$(ip -4 route show table 0 | grep 'default via' | cut -d' ' -f 3 | head -n 1 )
-        route add default gw $gateway dev $device  >>/tmp/p4a.log 2>&1
+        if ! ip route show default 2>/dev/null | grep -q 'default'; then
+                [ -n "$gateway" ] && [ -n "$device" ] && \
+                        route add default gw "$gateway" dev "$device" >>/tmp/p4a.log 2>&1
+        fi
 
         # Derive hostname from device name (or set to your preference)
         hostname=$(unchroot getprop ro.product.device) # Or set static name --> hostname="Raspbian"
@@ -50,30 +128,25 @@ start)
                 # Build setupVars.conf
                 mkdir -p /etc/pihole
                 /bin/cp /.setupVars /etc/pihole/setupVars.conf
-                openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/C=bm/ST=Pembroke/L=Hamilton/O=DesktopECHO/CN=$hstnm.local" -keyout /etc/ssl/private/ssl-cert-snakeoil.key -out /etc/ssl/certs/ssl-cert-snakeoil.pem >>/tmp/p4a.log 2>&1
-                chown root:xrdp /etc/ssl/certs/ssl-cert-snakeoil.pem ; chmod 660 /etc/ssl/certs/ssl-cert-snakeoil.pem
-                chown root:xrdp /etc/ssl/private/ssl-cert-snakeoil.key  ; chmod 660  /etc/ssl/private/ssl-cert-snakeoil.key
-                adduser xrdp ssl-cert >>/tmp/p4a.log 2>&1
+                echo "Generating TLS certificate..."
+                ensure_tls_cert
                 echo "Regenerate SSH Keys..."
-                dpkg-reconfigure openssh-server >>/tmp/p4a.log 2>&1
-                dpkg-reconfigure dropbear >>/tmp/p4a.log 2>&1
-                dropbearkey -t dss -f /etc/dropbear/dropbear_dss_host_key >>/tmp/p4a.log 2>&1
+                ensure_host_keys
                 /etc/init.d/ssh stop >>/tmp/p4a.log 2>&1
                 update-rc.d ssh disable >>/tmp/p4a.log 2>&1
-                pkill dropbear >>/tmp/p4a.log 2>&1
                 echo "Installing Unbound..."
                 dpkg -i /deb/unbound*_$(dpkg --print-architecture).deb >>/tmp/p4a.log 2>&1
                 cp /.pihole.conf /etc/unbound/unbound.conf.d/pihole.conf
                 /etc/init.d/unbound restart >>/tmp/p4a.log 2>&1
                 echo "Installing Pi-hole..."
-                wget -q -O basic-install.sh https://install.pi-hole.net
-                bash ./basic-install.sh --unattended
+                wget -q -O /tmp/basic-install.sh https://install.pi-hole.net
+                bash /tmp/basic-install.sh --unattended
                 /etc/init.d/pihole-FTL stop >>/tmp/p4a.log 2>&1
                 pkill lighttpd
                 echo "142.250.80.3 connectivitycheck.gstatic.com" > /etc/pihole/custom.list
                 PASSWORD=$(xkcdpass -C first -n 4 -d-)
                 echo -e "$PASSWORD\n$PASSWORD" | passwd "android" >>/tmp/p4a.log 2>&1
-                pihole -a -p "$PASSWORD" >>/tmp/p4a.log 2>&1
+                pihole setpassword "$PASSWORD" >>/tmp/p4a.log 2>&1
                 echo "$PASSWORD" > /var/tmp/p4a
         fi
 
@@ -107,15 +180,30 @@ start)
         /bin/cp /.unbound    /etc/init.d/unbound
         /bin/cp /.pihole-FTL /etc/init.d/pihole-FTL
         /bin/cp /.udev       /etc/init.d/udev
+        # Repair SSH host keys on every boot: images created by sysprep (and
+        # the upstream 3.2.0 image) ship without them, which makes dropbear
+        # fail with "No hostkeys available".
+        ensure_host_keys
+        ensure_tls_cert
         #  By default, when an instance is started Pi-hole networking
         #  is automagically configured.  When you change networks on the
         #  Android device, stop the Linux Deploy instance and re-start it.
         #
-        #  Alternatively, set static assignment by commentng-out
-        #  the next 2 lines.  Manually add your IP, subnet
-        #  and interface name to /etc/pihole/setupVars.conf
-        sed -i "/IPV4_ADDRESS/c\IPV4_ADDRESS=$ipaddr/$subnetmask" /etc/pihole/setupVars.conf >>/tmp/p4a.log 2>&1
-        sed -i "/PIHOLE_INTERFACE/c\PIHOLE_INTERFACE=$device"     /etc/pihole/setupVars.conf >>/tmp/p4a.log 2>&1
+        #  Pi-hole v6 stores its configuration in /etc/pihole/pihole.toml;
+        #  setupVars.conf is no longer used by FTL.
+        #
+        #  Alternatively, set a static assignment by commenting-out the
+        #  pihole.toml block below and editing /etc/pihole/pihole.toml.
+        if [ -f /etc/pihole/pihole.toml ]; then
+                sed -i "s|^  interface = .*|  interface = \"$device\"|" /etc/pihole/pihole.toml >>/tmp/p4a.log 2>&1
+                grep -q '^  listeningMode = ' /etc/pihole/pihole.toml && \
+                        sed -i 's|^  listeningMode = .*|  listeningMode = "ALL"|' /etc/pihole/pihole.toml >>/tmp/p4a.log 2>&1
+        fi
+        # Keep the legacy file in sync for third-party tools / older docs
+        if [ -f /etc/pihole/setupVars.conf ]; then
+                sed -i "/IPV4_ADDRESS/c\IPV4_ADDRESS=$ipaddr/$subnetmask" /etc/pihole/setupVars.conf >>/tmp/p4a.log 2>&1
+                sed -i "/PIHOLE_INTERFACE/c\PIHOLE_INTERFACE=$device"     /etc/pihole/setupVars.conf >>/tmp/p4a.log 2>&1
+        fi
 ;;
 
 stop)

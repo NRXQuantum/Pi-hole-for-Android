@@ -1,0 +1,5 @@
+#!/bin/sh
+# Wrapper used by /etc/init.d/p4a-terminal.  Records the pid of the
+# foreground busybox telnetd so the service can be stopped reliably.
+echo $$ > /run/p4a-terminal.pid
+exec /bin/busybox telnetd -F -K -p 5023 -b 127.0.0.1 -l /bin/bash

@@ -1,0 +1,102 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          dropbear
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Lightweight SSH server
+# Description:       Init script for drobpear SSH server.  Edit
+#                    /etc/default/dropbear to configure the server.
+### END INIT INFO
+#
+# Do not configure this file. Edit /etc/default/dropbear instead!
+#
+
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+DAEMON=/usr/sbin/dropbear
+NAME=dropbear
+DESC="Dropbear SSH server"
+DEFAULTCFG=/etc/default/dropbear
+PIDFILE="/run/$NAME.pid"
+
+DROPBEAR_PORT=22
+DROPBEAR_RECEIVE_WINDOW=65536
+DROPBEAR_EXTRA_ARGS=""
+
+set -e
+
+. /lib/lsb/init-functions
+
+cancel() { echo "$1" >&2; exit 0; };
+test ! -r "$DEFAULTCFG" || . "$DEFAULTCFG"
+test -x "$DAEMON" || cancel "$DAEMON does not exist or is not executable."
+test ! -x /usr/sbin/update-service || ! update-service --check dropbear ||
+  cancel 'The dropbear service is controlled through runit, use the sv(8) program'
+
+# /run is persistent in this container; do not let a pid file left over
+# from a previous session (or a recycled pid) block startup.
+clean_pidfile() {
+	[ -s "$PIDFILE" ] || return 0
+	pid="$(cat "$PIDFILE" 2>/dev/null)"
+	if [ -z "$pid" ] || [ ! -d "/proc/$pid" ] || \
+	   ! grep -q dropbear "/proc/$pid/cmdline" 2>/dev/null; then
+		rm -f "$PIDFILE"
+	fi
+}
+
+ensure_host_keys() {
+	for keytype in rsa ecdsa ed25519; do
+		keyfile="/etc/dropbear/dropbear_${keytype}_host_key"
+		[ -s "$keyfile" ] || \
+			dropbearkey -t "$keytype" -f "$keyfile" >/dev/null 2>&1
+	done
+}
+
+START_ARGS="-R -P $PIDFILE -p $DROPBEAR_PORT -W $DROPBEAR_RECEIVE_WINDOW $DROPBEAR_EXTRA_ARGS"
+
+stop_dropbear() {
+	if [ -s "$PIDFILE" ]; then
+		pid="$(cat "$PIDFILE" 2>/dev/null)"
+		if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+			kill "$pid" 2>/dev/null
+			for i in 1 2 3 4 5; do
+				[ -d "/proc/$pid" ] || break
+				sleep 1
+			done
+			[ -d "/proc/$pid" ] && kill -9 "$pid" 2>/dev/null
+		fi
+	fi
+	rm -f "$PIDFILE"
+}
+
+case "$1" in
+  start)
+	clean_pidfile
+	ensure_host_keys
+	# Let dropbear daemonize itself and write its own pid file; this is
+	# more reliable than start-stop-daemon inside the Android chroot.
+	$DAEMON $START_ARGS
+	;;
+  stop)
+	stop_dropbear
+	;;
+  restart|force-reload)
+	echo -n "Restarting $DESC: "
+	stop_dropbear
+	ensure_host_keys
+	sleep 1
+	$DAEMON $START_ARGS
+	echo "$NAME."
+	;;
+  status)
+		status_of_proc -p "$PIDFILE" "$DAEMON" "$NAME" && exit 0 || exit $?
+	;;
+  *)
+	N="/etc/init.d/$NAME"
+	echo "Usage: $N {start|stop|status|restart|force-reload}" >&2
+	exit 1
+	;;
+esac
+
+exit 0

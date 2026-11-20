@@ -32,15 +32,35 @@ DISABLE_TAG="/var/run/avahi-daemon/disabled-for-unicast-local"
 #       Function that starts the daemon/service.
 #
 d_start() {
-    $DAEMON -c && return 0
+    $DAEMON -c >/dev/null 2>&1 && return 0
+
+    # Give D-Bus a moment to create its socket; avahi is started almost
+    # immediately after dbus at boot.
+    i=0
+    while [ "$i" -lt 10 ] && [ ! -S /run/dbus/system_bus_socket ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+
+    mkdir -p /run/avahi-daemon
+    chown avahi:avahi /run/avahi-daemon 2>/dev/null
+    chmod 0755 /run/avahi-daemon
+    rm -f /run/avahi-daemon/pid
 
     if [ -e $DISABLE_TAG -a "$AVAHI_DAEMON_DETECT_LOCAL" != "0" ]; then
         # Disabled because of the existance of an unicast .local domain
         log_warning_msg "avahi-daemon disabled because there is a unicast .local domain"
-        exit 0;
+        return 0
     fi;
 
-    $DAEMON -D
+    # --no-chroot / --no-rlimits make avahi behave inside the Android
+    # chroot and avoid silent startup failures.
+    $DAEMON -D --no-chroot --no-rlimits
+    sleep 1
+
+    $DAEMON -c >/dev/null 2>&1 || \
+        log_warning_msg "avahi-daemon failed to start (mDNS disabled)"
+    return 0
 }
 
 #

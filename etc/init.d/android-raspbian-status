@@ -1,3 +1,4 @@
+#!/bin/bash
 ### BEGIN INIT INFO
 # Provides: android-raspbian-status
 # Required-Start: $all
@@ -34,8 +35,17 @@ echo '                                               '
   fi
 echo '_______________________________________________'
 echo
-IP=$(avahi-resolve -4 -n pihole.local | cut -f 2) ; (&>/dev/null avahi-publish -a -R $(hostname).local $IP &)
-IP=$(avahi-resolve -4 -n pihole.local | cut -f 2) ; (&>/dev/null avahi-publish -a -R nextcloudpi.local $IP &)
+# Publish mDNS aliases only when a working avahi daemon is available.
+# The old code called avahi-resolve unconditionally, which printed
+# "Failed to create client object: Daemon not running" on every boot.
+IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
+[ -z "$IP" ] && IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+if [ -n "$IP" ] && /usr/sbin/avahi-daemon -c >/dev/null 2>&1; then
+   HOST=$(hostname)
+   # avahi-daemon.conf sets host-name=pihole, so pihole.local is automatic
+   [ "$HOST" != "pihole" ] && (avahi-publish -a -R "$HOST.local" "$IP" >/dev/null 2>&1 &)
+   (avahi-publish -a -R nextcloudpi.local "$IP" >/dev/null 2>&1 &)
+fi
 ;;
 
 stop)
