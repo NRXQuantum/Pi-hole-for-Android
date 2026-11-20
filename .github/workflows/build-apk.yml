@@ -62,13 +62,23 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android build-tools
+      - name: Locate Android build-tools
         run: |
-          sdkmanager --install "build-tools;35.0.0" >/dev/null
-          echo "ANDROID_BUILD_TOOLS=$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_ENV"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          BT="$SDK/build-tools/35.0.0"
+          if [ ! -x "$BT/apksigner" ]; then
+            SDKMANAGER="$(command -v sdkmanager || true)"
+            if [ -z "$SDKMANAGER" ]; then
+              SDKMANAGER="$(ls "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n1 || true)"
+            fi
+            [ -n "$SDKMANAGER" ] || { echo "::error::sdkmanager not found"; exit 1; }
+            yes | "$SDKMANAGER" --licenses >/dev/null || true
+            "$SDKMANAGER" --install "build-tools;35.0.0" >/dev/null
+          fi
+          [ -x "$BT/apksigner" ] || { echo "::error::build-tools 35 not available"; exit 1; }
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_BUILD_TOOLS=$BT" >> "$GITHUB_ENV"
+          "$BT/aapt2" version
 
       - name: Check required secrets
         env:
