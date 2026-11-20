@@ -97,6 +97,11 @@ To build a release, open **Actions → Build and sign APK → Run workflow**, en
 signing certificate against `8e4a48e0122714043968bba9552eba599d1d787e49f21beb6b335e99262fb8eb` and fails if the secrets do
 not contain the release key, so a wrongly-signed APK can never be published.
 
+When `publish_release` is enabled the workflow attaches the APK only.  **Every release must also include
+`raspbian32.tgz` and `raspbian.tgz`** (copy them from the previous release when they did not change): the APK's default
+Source Path points at `releases/latest/download/raspbian32.tgz`, so a release without the images breaks new deployments.
+You can override the URL with the workflow's `source_path` input if you prefer a pinned tag.
+
 Keep a backup of the keystore and its passwords outside this repository (and outside GitHub).  **If the key is lost you
 cannot ship an update to existing users** — they would have to uninstall the app first.
 
