@@ -7,6 +7,12 @@
 Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole installer on Pi Deploy (a fork of Linux Deploy).  It can be used on **any** rooted Android device with an **ARMv7 or newer CPU** running Android 5.0 (Lolipop) or newer.  Form factor is not important; it could be a phone, tablet, HDMI stick or **any device running Android**.  For very old devices running Android 4.x, see the [Legacy branch](https://github.com/DesktopECHO/Pi-hole-for-Android/tree/legacy)
 
 
+### What's New (November 2026) — v3.2.2
+ - **Stable APK signature.** The APK is now built and signed by GitHub Actions with a persistent release keystore stored in repository secrets, so every future APK uses the same certificate and installs as an update instead of failing with **"App not installed"**.
+ - v3.2.1 and v3.2.2 are signed with the same certificate (`SHA-256: 8E:4A:48:E0:12:27:14:04:39:68:BB:A9:55:2E:BA:59:9D:1D:78:7E:49:F2:1B:EB:6B:33:5E:99:26:2F:B8:EB`). If you already run v3.2.1 you can update normally. If you are still on the upstream 3.2.0 APK or older, uninstall it once (signature differs), then install this release.
+ - The disk images are unchanged from v3.2.1 (identical checksums).
+ - See [APK signing in GitHub Actions](#apk-signing-in-github-actions) for the secrets the workflow needs.
+
 ### What's New (November 2026) — v3.2.1
 This release fixes the broken SSH, RDP and Pi Deploy **Terminal** in the 3.2.0 images.  Both disk images were rebuilt, and the included APK is pre-configured for them.
 
@@ -58,6 +64,44 @@ After a restart of the deployment, the Terminal tab and SSH should both work.
  - Fixed `pideploy-nextcloud-install` to move Pi-hole v6 webserver ports. 
  - Pi Deploy image is **64-bit** by default.
  - For **32-bit** devices, configure Pi Deploy to download the ARMv7 image:  Tap **Properties** and change the end of the **Source Path** URL from `/raspbian.tgz` to `/raspbian32.tgz`
+
+### APK signing in GitHub Actions
+
+This repository ships a **prebuilt APK** (there is no Gradle project here), so the release APK is built by
+[`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml) using [`scripts/build-apk.sh`](scripts/build-apk.sh):
+the pinned upstream 3.2.0 APK is decoded with `apktool`, the Pi-hole defaults are applied, and the result is aligned and
+signed with `apksigner`.  The signing key comes from repository secrets, so every run produces the **same certificate** —
+this is what allows Android to install a new release over an existing installation.
+
+**Required repository secrets** (**Settings → Secrets and variables → Actions**):
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | the release keystore, base64-encoded: `base64 -w0 release.keystore` |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | key alias inside the keystore (`p4a` for the current release key) |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+Set them with the GitHub CLI:
+
+```sh
+R=NRXQuantum/Pi-hole-for-Android
+base64 -w0 release.keystore | gh secret set ANDROID_KEYSTORE_BASE64 -R "$R"
+gh secret set ANDROID_KEYSTORE_PASSWORD -R "$R"   # paste the keystore password
+gh secret set ANDROID_KEY_ALIAS -R "$R" -b p4a
+gh secret set ANDROID_KEY_PASSWORD -R "$R"        # paste the key password
+```
+
+To build a release, open **Actions → Build and sign APK → Run workflow**, enter the new `versionName` and an increasing
+`versionCode`, and optionally enable `publish_release` to create/update the GitHub release.  The workflow verifies the
+signing certificate against `8e4a48e0122714043968bba9552eba599d1d787e49f21beb6b335e99262fb8eb` and fails if the secrets do
+not contain the release key, so a wrongly-signed APK can never be published.
+
+Keep a backup of the keystore and its passwords outside this repository (and outside GitHub).  **If the key is lost you
+cannot ship an update to existing users** — they would have to uninstall the app first.
+
+Forks that compile Pi Deploy from source with Gradle can reuse the same four environment variables in a
+`signingConfigs` block; see [`docs/gradle-signing.gradle`](docs/gradle-signing.gradle).
 
 ### Requirements:
 

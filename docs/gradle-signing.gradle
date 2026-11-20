@@ -1,0 +1,39 @@
+// Reference signing configuration for forks that build Pi Deploy from source
+// with Gradle.
+//
+// This repository does NOT contain a Gradle project: it ships a prebuilt APK,
+// and .github/workflows/build-apk.yml signs it with apksigner using the same
+// four environment variables.  If you maintain a source build, apply this
+// block to the app module's build.gradle and provide the variables from the
+// same GitHub Actions secrets (or a local keystore.properties file).
+//
+//   ANDROID_KEYSTORE            path to the .jks/.keystore file
+//   ANDROID_KEYSTORE_PASSWORD   keystore password
+//   ANDROID_KEY_ALIAS           key alias
+//   ANDROID_KEY_PASSWORD        key password
+//
+// Keeping the key stable is essential: Android only installs an update when
+// the new APK is signed with the same certificate as the installed one.
+
+android {
+    signingConfigs {
+        release {
+            storeFile file(System.getenv("ANDROID_KEYSTORE") ?: "release.keystore")
+            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+
+            // Optional: also enable the modern schemes explicitly.
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+}
