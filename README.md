@@ -7,6 +7,12 @@
 Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole installer on Pi Deploy (a fork of Linux Deploy).  It can be used on **any** rooted Android device with an **ARMv7 or newer CPU** running Android 5.0 (Lolipop) or newer.  Form factor is not important; it could be a phone, tablet, HDMI stick or **any device running Android**.  For very old devices running Android 4.x, see the [Legacy branch](https://github.com/DesktopECHO/Pi-hole-for-Android/tree/legacy)
 
 
+### What's New (November 2026) — v3.2.3
+ - **Fixes the `files/bin/pideploy: not found` deployment failure.** The app now re-initializes its environment when the extracted binaries are missing, instead of trusting only the `version` marker left behind by a restored, cleaned or partially restored data directory. It also initializes even if the storage permission is denied (the setup only needs internal storage), and rebuilds the environment automatically if a command is about to run without it.
+ - The version marker is kept in sync with the APK version, so installing an update always refreshes the extracted environment once.
+ - **Same signing key** as v3.2.1/v3.2.2 (`SHA-256: 8E:4A:48:E0:12:27:14:04:39:68:BB:A9:55:2E:BA:59:9D:1D:78:7E:49:F2:1B:EB:6B:33:5E:99:26:2F:B8:EB`). If you are on v3.2.2 or v3.2.1 you can update normally and keep your deployment. Users coming from the upstream 3.2.0 APK must still uninstall it once because its signature differs.
+ - The disk images are unchanged from v3.2.1/v3.2.2 (identical checksums).
+
 ### What's New (November 2026) — v3.2.2
  - **Stable APK signature.** The APK is now built and signed by GitHub Actions with a persistent release keystore stored in repository secrets, so every future APK uses the same certificate and installs as an update instead of failing with **"App not installed"**.
  - v3.2.1 and v3.2.2 are signed with the same certificate (`SHA-256: 8E:4A:48:E0:12:27:14:04:39:68:BB:A9:55:2E:BA:59:9D:1D:78:7E:49:F2:1B:EB:6B:33:5E:99:26:2F:B8:EB`). If you already run v3.2.1 you can update normally. If you are still on the upstream 3.2.0 APK or older, uninstall it once (signature differs), then install this release.

@@ -135,6 +135,197 @@ set_string("source_path", source_path)
 strings.write_text(text, encoding="utf-8")
 PY
 
+# --- patch the environment bootstrap ------------------------------------
+# The upstream app trusts files/version and skips extraction when it matches,
+# and it only initializes at all after WRITE_EXTERNAL_STORAGE is granted.  A
+# restored, cleaned or partially restored data directory can therefore keep
+# the marker while files/bin/pideploy (or its interpreter) is missing, which
+# aborts every deployment with ".../files/bin/pideploy: not found".
+echo "==> patching environment bootstrap"
+python3 - "$WORK/decoded" "$VERSION_NAME" "$VERSION_CODE" <<'PY'
+import pathlib
+import re
+import sys
+
+base = pathlib.Path(sys.argv[1])
+app_version = f"{sys.argv[2]}-{sys.argv[3]}"
+smali = base / "smali_classes2/com/desktopecho/pideploy"
+
+
+def patch(path: pathlib.Path, pattern: str, replacement: str, label: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    new, count = re.subn(pattern, replacement, text, flags=re.S)
+    if count != 1:
+        raise SystemExit(f"{label}: expected exactly one match, found {count}")
+    path.write_text(new, encoding="utf-8")
+
+
+# Keep the stored version marker in sync with the release so an update always
+# refreshes the extracted environment once.
+patch(
+    smali / "PrefStore.smali",
+    r'(\.method public static getVersion\(\)Ljava/lang/String;.*?'
+    r'const-string v0, ")[^"]*(")',
+    r"\g<1>" + app_version + r"\g<2>",
+    "PrefStore.getVersion",
+)
+
+helpers = """
+.method private static checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
+    .locals 1
+    .param p0, "dir"    # Ljava/lang/String;
+    .param p1, "name"    # Ljava/lang/String;
+    .param p2, "executable"    # Z
+
+    new-instance v0, Ljava/io/File;
+
+    invoke-direct {v0, p0, p1}, Ljava/io/File;-><init>(Ljava/lang/String;Ljava/lang/String;)V
+
+    invoke-virtual {v0}, Ljava/io/File;->exists()Z
+
+    move-result v0
+
+    if-eqz v0, :cond_0
+
+    if-eqz p2, :cond_0
+
+    new-instance v0, Ljava/io/File;
+
+    invoke-direct {v0, p0, p1}, Ljava/io/File;-><init>(Ljava/lang/String;Ljava/lang/String;)V
+
+    invoke-virtual {v0}, Ljava/io/File;->canExecute()Z
+
+    move-result v0
+
+    return v0
+
+    :cond_0
+    return v0
+.end method
+
+.method private static envIntact(Landroid/content/Context;)Z
+    .locals 4
+    .param p0, "c"    # Landroid/content/Context;
+
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getBinDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v0
+
+    const-string v1, "pideploy"
+
+    const/4 v2, 0x1
+
+    invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
+
+    move-result v3
+
+    if-nez v3, :cond_0
+
+    const/4 v3, 0x0
+
+    return v3
+
+    :cond_0
+    const-string v1, "busybox"
+
+    invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
+
+    move-result v3
+
+    if-nez v3, :cond_1
+
+    const/4 v3, 0x0
+
+    return v3
+
+    :cond_1
+    const-string v1, "sh"
+
+    invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
+
+    move-result v3
+
+    if-nez v3, :cond_2
+
+    const/4 v3, 0x0
+
+    return v3
+
+    :cond_2
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getEnvDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v0
+
+    const-string v1, "cli.sh"
+
+    const/4 v2, 0x0
+
+    invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
+
+    move-result v3
+
+    return v3
+.end method
+
+"""
+
+patch(
+    smali / "EnvUtils.smali",
+    r"(\n\.method public static isLatestVersion\(Landroid/content/Context;\)Z\n)",
+    "\n" + helpers.lstrip("\n") + r"\g<1>",
+    "EnvUtils helpers",
+)
+
+# A matching version marker is not enough: require the extracted binaries,
+# their interpreter and the CLI library to be present and executable.
+patch(
+    smali / "EnvUtils.smali",
+    r"(    if-nez v1, :cond_0\n\n    return v2\n\n)(    \.line 171\n    :cond_0\n)",
+    r"\g<1>"
+    "    invoke-static {p0}, Lcom/desktopecho/pideploy/EnvUtils;->envIntact(Landroid/content/Context;)Z\n\n"
+    "    move-result v1\n\n"
+    "    if-eqz v1, :cond_0\n\n"
+    "    return v2\n\n"
+    r"\g<2>",
+    "EnvUtils.isLatestVersion",
+)
+
+# Rebuild the environment if a command is about to run without it.
+patch(
+    smali / "EnvUtils.smali",
+    r"(\.method public static cli\(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;\)Z\n"
+    r"    \.locals 5\n"
+    r'    \.param p0, "c"    # Landroid/content/Context;\n'
+    r'    \.param p1, "cmd"    # Ljava/lang/String;\n'
+    r'    \.param p2, "args"    # Ljava/lang/String;\n\n)',
+    r"\g<1>"
+    "    invoke-static {p0}, Lcom/desktopecho/pideploy/EnvUtils;->envIntact(Landroid/content/Context;)Z\n\n"
+    "    move-result v3\n\n"
+    "    if-nez v3, :env_ready\n\n"
+    "    invoke-static {p0}, Lcom/desktopecho/pideploy/EnvUtils;->updateEnv(Landroid/content/Context;)Z\n\n"
+    "    :env_ready\n\n",
+    "EnvUtils.cli",
+)
+
+# Initialize even when the storage permission is denied: extraction only uses
+# internal storage, so refusing WRITE_EXTERNAL_STORAGE must not leave the app
+# without files/bin/pideploy.
+patch(
+    smali / "activity/MainActivity.smali",
+    r"(    invoke-virtual \{v0\}, Landroid/widget/Toast;->show\(\)V\n\n)"
+    r"(    \.line 472\n)",
+    r"\g<1>"
+    "    .line 470\n"
+    "    new-instance v1, Lcom/desktopecho/pideploy/UpdateEnvTask;\n\n"
+    "    invoke-direct {v1, p0}, Lcom/desktopecho/pideploy/UpdateEnvTask;-><init>(Landroid/content/Context;)V\n\n"
+    "    const/4 v0, 0x0\n\n"
+    "    new-array v0, v0, [Ljava/lang/String;\n\n"
+    "    invoke-virtual {v1, v0}, Lcom/desktopecho/pideploy/UpdateEnvTask;->execute([Ljava/lang/Object;)Landroid/os/AsyncTask;\n\n"
+    r"\g<2>",
+    "MainActivity.onRequestPermissionsResult",
+)
+PY
+
 # Version bump (apktool.yml feeds the manifest at build time).
 sed -i -E "s/^  versionCode: .*/  versionCode: ${VERSION_CODE}/" "$WORK/decoded/apktool.yml"
 sed -i -E "s/^  versionName: .*/  versionName: ${VERSION_NAME}/" "$WORK/decoded/apktool.yml"
@@ -142,6 +333,10 @@ grep -q "^  versionCode: ${VERSION_CODE}$" "$WORK/decoded/apktool.yml"
 grep -q "^  versionName: ${VERSION_NAME}$" "$WORK/decoded/apktool.yml"
 grep -q '<string name="is_telnet">true</string>' "$WORK/decoded/res/values/strings.xml"
 grep -q '<string name="is_http">true</string>' "$WORK/decoded/res/values/strings.xml"
+grep -q "const-string v0, \"${VERSION_NAME}-${VERSION_CODE}\"" "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/PrefStore.smali"
+grep -q 'envIntact' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q ':env_ready' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q 'new-array v0, v0, \[Ljava/lang/String;' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/activity/MainActivity.smali"
 
 # --- build --------------------------------------------------------------
 echo "==> building unsigned APK"
