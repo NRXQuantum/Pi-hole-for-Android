@@ -7,11 +7,27 @@
 Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole installer on Pi Deploy (a fork of Linux Deploy).  It can be used on **any** rooted Android device with an **ARMv7 or newer CPU** running Android 5.0 (Lolipop) or newer.  Form factor is not important; it could be a phone, tablet, HDMI stick or **any device running Android**.  For very old devices running Android 4.x, see the [Legacy branch](https://github.com/DesktopECHO/Pi-hole-for-Android/tree/legacy)
 
 
-### What's New (November 2026) — v3.2.3
- - **Fixes the `files/bin/pideploy: not found` deployment failure.** The app now re-initializes its environment when the extracted binaries are missing, instead of trusting only the `version` marker left behind by a restored, cleaned or partially restored data directory. It also initializes even if the storage permission is denied (the setup only needs internal storage), and rebuilds the environment automatically if a command is about to run without it.
- - The version marker is kept in sync with the APK version, so installing an update always refreshes the extracted environment once.
- - **Same signing key** as v3.2.1/v3.2.2 (`SHA-256: 8E:4A:48:E0:12:27:14:04:39:68:BB:A9:55:2E:BA:59:9D:1D:78:7E:49:F2:1B:EB:6B:33:5E:99:26:2F:B8:EB`). If you are on v3.2.2 or v3.2.1 you can update normally and keep your deployment. Users coming from the upstream 3.2.0 APK must still uninstall it once because its signature differs.
- - The disk images are unchanged from v3.2.1/v3.2.2 (identical checksums).
+### What's New (November 2026) — v3.2.4
+ - **Fixes the `files/bin/pideploy: not found` failure for real.** The launcher the app writes used the shebang
+   `#!/<app files>/bin/sh`, but that `sh` is a symlink created by `busybox --install -s`. On devices where busybox could
+   not execute, the symlink was never created, so the kernel rejected every `pideploy` invocation with **not found**.
+   v3.2.4 writes a launcher that always runs under `/system/bin/sh`, selects a working bundled busybox, repairs
+   `files/bin/sh`, and then runs the Pi Deploy CLI with it.
+ - **Both Android ABIs are now bundled** (`busybox_arm64` and `busybox_arm` inside `bin/all`), so the extracted
+   environment can repair itself even when the primary busybox is unusable.
+ - **The environment is verified by what can run, not by the version file.** The app checks for the launcher, a bundled
+   busybox and `cli.sh`, and it runs the launcher through `/system/bin/sh`, so a stale shebang or a missing execute bit
+   no longer breaks Start.
+ - **Tested before release.** The built APK's own launcher was extracted and executed under `/system/bin/sh` on an
+   Android 10 ARM64 device with `files/bin/sh` absent, with a deliberately broken primary busybox, and with only the
+   32-bit fallback available. `help`, `status` and `start` all reached the Pi Deploy CLI (`start` reports
+   `The container is not mounted.` instead of `not found`).
+ - **Same signing key** as v3.2.1/v3.2.2/v3.2.3 (`SHA-256: 8E:4A:48:E0:12:27:14:04:39:68:BB:A9:55:2E:BA:59:9D:1D:78:7E:49:F2:1B:EB:6B:33:5E:99:26:2F:B8:EB`). If you are on v3.2.1 or newer you can update normally and keep your deployment. Users coming from the upstream 3.2.0 APK must still uninstall it once because its signature differs.
+ - The disk images are unchanged from v3.2.1–v3.2.3 (identical checksums).
+
+> **v3.2.3 did not fix this.** Its integrity check sat after the branch that reads the existing `version` marker, so it
+> was skipped on exactly the devices that needed it. v3.2.4 replaces the launcher itself instead of relying on
+> `busybox --install` having succeeded.
 
 ### What's New (November 2026) — v3.2.2
  - **Stable APK signature.** The APK is now built and signed by GitHub Actions with a persistent release keystore stored in repository secrets, so every future APK uses the same certificate and installs as an update instead of failing with **"App not installed"**.

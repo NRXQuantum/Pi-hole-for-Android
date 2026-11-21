@@ -135,12 +135,27 @@ set_string("source_path", source_path)
 strings.write_text(text, encoding="utf-8")
 PY
 
+# --- pack architecture-specific busybox fallbacks -----------------------
+# makeMainScript() below writes a launcher that selects a working busybox at
+# runtime.  Keeping both Android ABIs inside bin/all lets one extracted
+# environment repair itself when the primary busybox cannot execute.
+if [ -f "$WORK/decoded/assets/bin/arm/busybox" ]; then
+    cp "$WORK/decoded/assets/bin/arm/busybox" "$WORK/decoded/assets/bin/all/busybox_arm"
+fi
+if [ -f "$WORK/decoded/assets/bin/arm_64/busybox" ]; then
+    cp "$WORK/decoded/assets/bin/arm_64/busybox" "$WORK/decoded/assets/bin/all/busybox_arm64"
+fi
+
 # --- patch the environment bootstrap ------------------------------------
-# The upstream app trusts files/version and skips extraction when it matches,
-# and it only initializes at all after WRITE_EXTERNAL_STORAGE is granted.  A
-# restored, cleaned or partially restored data directory can therefore keep
-# the marker while files/bin/pideploy (or its interpreter) is missing, which
-# aborts every deployment with ".../files/bin/pideploy: not found".
+# Root cause of ".../files/bin/pideploy: not found": the upstream launcher is
+# written with the shebang "#!/<binDir>/sh", but <binDir>/sh only appears when
+# "busybox --install -s" succeeds.  On devices where busybox cannot execute
+# (missing interpreter, wrong ABI, interrupted extraction) that symlink never
+# exists, the kernel rejects the script, and the stale version marker makes the
+# app believe the environment is complete so it never retries.
+#
+# The replacement launcher always runs under /system/bin/sh, locates a working
+# bundled busybox, repairs <binDir>/sh, and then executes the CLI with it.
 echo "==> patching environment bootstrap"
 python3 - "$WORK/decoded" "$VERSION_NAME" "$VERSION_CODE" <<'PY'
 import pathlib
@@ -152,23 +167,134 @@ app_version = f"{sys.argv[2]}-{sys.argv[3]}"
 smali = base / "smali_classes2/com/desktopecho/pideploy"
 
 
-def patch(path: pathlib.Path, pattern: str, replacement: str, label: str) -> None:
+def substitute(path: pathlib.Path, pattern: str, func, label: str) -> None:
     text = path.read_text(encoding="utf-8")
-    new, count = re.subn(pattern, replacement, text, flags=re.S)
+    new, count = re.subn(pattern, func, text, flags=re.S)
     if count != 1:
         raise SystemExit(f"{label}: expected exactly one match, found {count}")
     path.write_text(new, encoding="utf-8")
 
 
+def replace_once(path: pathlib.Path, old: str, new: str, label: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected exactly one match, found {count}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def smali_string(text: str) -> str:
+    return (text.replace("\\", "\\\\").replace('"', '\\"')
+                .replace("\n", "\\n").replace("\t", "\\t"))
+
+
 # Keep the stored version marker in sync with the release so an update always
 # refreshes the extracted environment once.
-patch(
+substitute(
     smali / "PrefStore.smali",
     r'(\.method public static getVersion\(\)Ljava/lang/String;.*?'
     r'const-string v0, ")[^"]*(")',
-    r"\g<1>" + app_version + r"\g<2>",
+    lambda m: m.group(1) + app_version + m.group(2),
     "PrefStore.getVersion",
 )
+
+# Each Android runtime is shipped twice by the launcher: first extracted under
+# bin/all (busybox_arm / busybox_arm64), then the matching arch copy overwrites
+# the plain "busybox".  If that primary copy cannot execute, the launcher falls
+# back to one of these.
+launcher = """#!/system/bin/sh
+BIN="${0%/*}"
+[ "$BIN" = "$0" ] && BIN="."
+ENV_DIR="${BIN%/*}"
+[ "$ENV_DIR" = "$BIN" ] && ENV_DIR="."
+export ENV_DIR
+CP=/system/bin/cp
+[ -x "$CP" ] || CP=cp
+RM=/system/bin/rm
+[ -x "$RM" ] || RM=rm
+CH=/system/bin/chmod
+[ -x "$CH" ] || CH=chmod
+BB="$BIN/busybox"
+if ! "$BB" true >/dev/null 2>&1; then
+    for c in "$BIN/busybox_arm64" "$BIN/busybox_arm"; do
+        [ -f "$c" ] || continue
+        "$RM" -f "$BB" 2>/dev/null
+        "$CP" -f "$c" "$BB" 2>/dev/null || continue
+        "$CH" 755 "$BB" 2>/dev/null
+        if "$BB" true >/dev/null 2>&1; then
+            break
+        fi
+    done
+fi
+if ! "$BB" true >/dev/null 2>&1; then
+    echo "Pi Deploy: cannot execute a bundled busybox in $BIN" >&2
+    exit 127
+fi
+if [ ! -f "$BIN/sh" ] || ! "$BIN/sh" -c true >/dev/null 2>&1; then
+    "$RM" -f "$BIN/sh" 2>/dev/null
+    "$CP" -f "$BB" "$BIN/sh" 2>/dev/null
+    "$CH" 755 "$BIN/sh" 2>/dev/null
+fi
+"$BB" --install -s "$BIN" >/dev/null 2>&1
+PATH="$BIN:$PATH"
+export PATH
+exec "$BB" sh -c '. "$ENV_DIR/cli.sh" "$@"' pideploy "$@"
+"""
+
+new_main_script = """.method private static makeMainScript(Landroid/content/Context;)Z
+    .locals 4
+    .param p0, "c"    # Landroid/content/Context;
+
+    new-instance v0, Ljava/lang/StringBuilder;
+
+    invoke-direct {v0}, Ljava/lang/StringBuilder;-><init>()V
+
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getBinDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v1
+
+    invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v1, "/pideploy"
+
+    invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+
+    move-result-object v0
+
+    :try_start_0
+    new-instance v1, Ljava/io/FileWriter;
+
+    invoke-direct {v1, v0}, Ljava/io/FileWriter;-><init>(Ljava/lang/String;)V
+
+    const-string v2, "@@LAUNCHER@@"
+
+    invoke-virtual {v1, v2}, Ljava/io/FileWriter;->write(Ljava/lang/String;)V
+
+    invoke-virtual {v1}, Ljava/io/FileWriter;->close()V
+    :try_end_0
+    .catch Ljava/io/IOException; {:try_start_0 .. :try_end_0} :catch_0
+
+    const/4 v1, 0x1
+
+    return v1
+
+    :catch_0
+    move-exception v1
+
+    const/4 v1, 0x0
+
+    return v1
+.end method
+""".replace("@@LAUNCHER@@", smali_string(launcher))
+
+env_utils = smali / "EnvUtils.smali"
+text = env_utils.read_text(encoding="utf-8")
+start = text.index(".method private static makeMainScript(Landroid/content/Context;)Z")
+end = text.index(".end method", start) + len(".end method")
+text = text[:start] + new_main_script.rstrip("\n") + text[end:]
+env_utils.write_text(text, encoding="utf-8")
 
 helpers = """
 .method private static checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
@@ -204,7 +330,7 @@ helpers = """
 .end method
 
 .method private static envIntact(Landroid/content/Context;)Z
-    .locals 4
+    .locals 5
     .param p0, "c"    # Landroid/content/Context;
 
     invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getBinDir(Landroid/content/Context;)Ljava/lang/String;
@@ -213,45 +339,43 @@ helpers = """
 
     const-string v1, "pideploy"
 
+    const/4 v2, 0x0
+
+    invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
+
+    move-result v3
+
+    if-nez v3, :fail
+
+    const-string v1, "busybox"
+
     const/4 v2, 0x1
 
     invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
 
     move-result v3
 
-    if-nez v3, :cond_0
+    if-eqz v3, :have_busybox
 
-    const/4 v3, 0x0
-
-    return v3
-
-    :cond_0
-    const-string v1, "busybox"
+    const-string v1, "busybox_arm64"
 
     invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
 
     move-result v3
 
-    if-nez v3, :cond_1
+    if-eqz v3, :have_busybox
 
-    const/4 v3, 0x0
-
-    return v3
-
-    :cond_1
-    const-string v1, "sh"
+    const-string v1, "busybox_arm"
 
     invoke-static {v0, v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->checkFile(Ljava/lang/String;Ljava/lang/String;Z)Z
 
     move-result v3
 
-    if-nez v3, :cond_2
+    if-eqz v3, :have_busybox
 
-    const/4 v3, 0x0
+    goto :fail
 
-    return v3
-
-    :cond_2
+    :have_busybox
     invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getEnvDir(Landroid/content/Context;)Ljava/lang/String;
 
     move-result-object v0
@@ -264,41 +388,59 @@ helpers = """
 
     move-result v3
 
+    if-nez v3, :fail
+
+    const/4 v3, 0x1
+
+    return v3
+
+    :fail
+    const/4 v3, 0x0
+
     return v3
 .end method
 
 """
 
-patch(
-    smali / "EnvUtils.smali",
-    r"(\n\.method public static isLatestVersion\(Landroid/content/Context;\)Z\n)",
-    "\n" + helpers.lstrip("\n") + r"\g<1>",
+replace_once(
+    env_utils,
+    "\n.method public static isLatestVersion(Landroid/content/Context;)Z\n",
+    "\n" + helpers.lstrip("\n") + ".method public static isLatestVersion(Landroid/content/Context;)Z\n",
     "EnvUtils helpers",
 )
 
-# A matching version marker is not enough: require the extracted binaries,
-# their interpreter and the CLI library to be present and executable.
-patch(
-    smali / "EnvUtils.smali",
-    r"(    if-nez v1, :cond_0\n\n    return v2\n\n)(    \.line 171\n    :cond_0\n)",
-    r"\g<1>"
+# A version marker only means extraction finished; it does not prove the
+# launcher can run.  Rebuild the environment whenever it is incomplete.
+replace_once(
+    env_utils,
+    '.method public static isLatestVersion(Landroid/content/Context;)Z\n'
+    "    .locals 5\n"
+    '    .param p0, "c"    # Landroid/content/Context;\n\n',
+    '.method public static isLatestVersion(Landroid/content/Context;)Z\n'
+    "    .locals 5\n"
+    '    .param p0, "c"    # Landroid/content/Context;\n\n'
     "    invoke-static {p0}, Lcom/desktopecho/pideploy/EnvUtils;->envIntact(Landroid/content/Context;)Z\n\n"
     "    move-result v1\n\n"
-    "    if-eqz v1, :cond_0\n\n"
-    "    return v2\n\n"
-    r"\g<2>",
+    "    if-eqz v1, :env_ok\n\n"
+    "    const/4 v1, 0x0\n\n"
+    "    return v1\n\n"
+    "    :env_ok\n\n",
     "EnvUtils.isLatestVersion",
 )
 
 # Rebuild the environment if a command is about to run without it.
-patch(
-    smali / "EnvUtils.smali",
-    r"(\.method public static cli\(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;\)Z\n"
-    r"    \.locals 5\n"
-    r'    \.param p0, "c"    # Landroid/content/Context;\n'
-    r'    \.param p1, "cmd"    # Ljava/lang/String;\n'
-    r'    \.param p2, "args"    # Ljava/lang/String;\n\n)',
-    r"\g<1>"
+replace_once(
+    env_utils,
+    '.method public static cli(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z\n'
+    "    .locals 5\n"
+    '    .param p0, "c"    # Landroid/content/Context;\n'
+    '    .param p1, "cmd"    # Ljava/lang/String;\n'
+    '    .param p2, "args"    # Ljava/lang/String;\n\n',
+    '.method public static cli(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z\n'
+    "    .locals 5\n"
+    '    .param p0, "c"    # Landroid/content/Context;\n'
+    '    .param p1, "cmd"    # Ljava/lang/String;\n'
+    '    .param p2, "args"    # Ljava/lang/String;\n\n'
     "    invoke-static {p0}, Lcom/desktopecho/pideploy/EnvUtils;->envIntact(Landroid/content/Context;)Z\n\n"
     "    move-result v3\n\n"
     "    if-nez v3, :env_ready\n\n"
@@ -307,21 +449,38 @@ patch(
     "EnvUtils.cli",
 )
 
+# Run the launcher through the system shell: this still works when the script
+# lost its execute bit or carries a stale shebang from an older release.
+replace_once(
+    env_utils,
+    "    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getBinDir(Landroid/content/Context;)Ljava/lang/String;\n\n"
+    "    move-result-object v4\n\n"
+    '    invoke-virtual {v2, v4}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n'
+    '    const-string v4, "/pideploy "',
+    '    const-string v4, "/system/bin/sh "\n\n'
+    "    invoke-virtual {v2, v4}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n"
+    "    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getBinDir(Landroid/content/Context;)Ljava/lang/String;\n\n"
+    "    move-result-object v4\n\n"
+    '    invoke-virtual {v2, v4}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n'
+    '    const-string v4, "/pideploy "',
+    "EnvUtils.cli command",
+)
+
 # Initialize even when the storage permission is denied: extraction only uses
 # internal storage, so refusing WRITE_EXTERNAL_STORAGE must not leave the app
 # without files/bin/pideploy.
-patch(
-    smali / "activity/MainActivity.smali",
-    r"(    invoke-virtual \{v0\}, Landroid/widget/Toast;->show\(\)V\n\n)"
-    r"(    \.line 472\n)",
-    r"\g<1>"
+replace_once(
+    base / "smali_classes2/com/desktopecho/pideploy/activity/MainActivity.smali",
+    "    invoke-virtual {v0}, Landroid/widget/Toast;->show()V\n\n"
+    "    .line 472\n",
+    "    invoke-virtual {v0}, Landroid/widget/Toast;->show()V\n\n"
     "    .line 470\n"
     "    new-instance v1, Lcom/desktopecho/pideploy/UpdateEnvTask;\n\n"
     "    invoke-direct {v1, p0}, Lcom/desktopecho/pideploy/UpdateEnvTask;-><init>(Landroid/content/Context;)V\n\n"
     "    const/4 v0, 0x0\n\n"
     "    new-array v0, v0, [Ljava/lang/String;\n\n"
     "    invoke-virtual {v1, v0}, Lcom/desktopecho/pideploy/UpdateEnvTask;->execute([Ljava/lang/Object;)Landroid/os/AsyncTask;\n\n"
-    r"\g<2>",
+    "    .line 472\n",
     "MainActivity.onRequestPermissionsResult",
 )
 PY
@@ -336,6 +495,12 @@ grep -q '<string name="is_http">true</string>' "$WORK/decoded/res/values/strings
 grep -q "const-string v0, \"${VERSION_NAME}-${VERSION_CODE}\"" "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/PrefStore.smali"
 grep -q 'envIntact' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
 grep -q ':env_ready' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q '#!/system/bin/sh' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q 'cannot execute a bundled busybox' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q 'const-string v4, "/system/bin/sh "' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q 'busybox_arm64' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+test -s "$WORK/decoded/assets/bin/all/busybox_arm"
+test -s "$WORK/decoded/assets/bin/all/busybox_arm64"
 grep -q 'new-array v0, v0, \[Ljava/lang/String;' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/activity/MainActivity.smali"
 
 # --- build --------------------------------------------------------------
