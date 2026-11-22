@@ -7,6 +7,21 @@
 Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole installer on Pi Deploy (a fork of Linux Deploy).  It can be used on **any** rooted Android device with an **ARMv7 or newer CPU** running Android 5.0 (Lolipop) or newer.  Form factor is not important; it could be a phone, tablet, HDMI stick or **any device running Android**.  For very old devices running Android 4.x, see the [Legacy branch](https://github.com/DesktopECHO/Pi-hole-for-Android/tree/legacy)
 
 
+### What's New (November 2026) — v3.2.5
+ - **Fixes the `files/bin/pideploy: not found` failure when the app cannot write its own data directory.** On some
+   reinstalls, `/data/user/0/com.desktopecho.pideploy` keeps the **previous install's UID**. The new app then cannot
+   write `files/`, environment extraction fails with `EACCES`, and `files/bin/pideploy` is never created. Storage and
+   root permissions cannot fix this; v3.2.5 detects the unwritable directory and runs
+   `chown -R <current-uid>:<current-uid> <data dir>` through `su` before extracting. Healthy installs never invoke root
+   for this check.
+ - **All v3.2.4 launcher fixes are included** (`#!/system/bin/sh`, working bundled busybox, repaired `files/bin/sh`,
+   both ARM ABIs in `bin/all`).
+ - **Tested on the affected device before release:** stale owner `10081` with app UID `10086` was repaired in about
+   4 seconds, the environment extracted to `3.2.5-319` in about 10 seconds, and **START** ran the full `do_start`
+   bootstrap with no `not found`.
+ - **Same signing key** as v3.2.1–v3.2.4 (`SHA-256: 8E:4A:48:E0:12:27:14:04:39:68:BB:A9:55:2E:BA:59:9D:1D:78:7E:49:F2:1B:EB:6B:33:5E:99:26:2F:B8:EB`). If you are on v3.2.1 or newer you can update normally and keep your deployment. Users coming from the upstream 3.2.0 APK must still uninstall it once because its signature differs.
+ - The disk images are unchanged from v3.2.1–v3.2.4 (identical checksums).
+
 ### What's New (November 2026) — v3.2.4
  - **Fixes the `files/bin/pideploy: not found` failure for real.** The launcher the app writes used the shebang
    `#!/<app files>/bin/sh`, but that `sh` is a symlink created by `busybox --install -s`. On devices where busybox could

@@ -466,6 +466,77 @@ replace_once(
     "EnvUtils.cli command",
 )
 
+# A reinstall can reuse an old data directory whose owner is the previous
+# install's UID.  The app then cannot write its own files/, extraction fails
+# silently, and pideploy is missing.  When root is available, repair the
+# ownership of the app's own data directory before extracting.
+replace_once(
+    env_utils,
+    '.method static updateEnv(Landroid/content/Context;)Z\n'
+    "    .locals 16\n"
+    '    .param p0, "c"    # Landroid/content/Context;\n\n'
+    "    .line 242\n",
+    '.method static updateEnv(Landroid/content/Context;)Z\n'
+    "    .locals 16\n"
+    '    .param p0, "c"    # Landroid/content/Context;\n\n'
+    "    move-object/from16 v15, p0\n\n"
+    "    invoke-virtual {v15}, Landroid/content/Context;->getApplicationInfo()Landroid/content/pm/ApplicationInfo;\n\n"
+    "    move-result-object v0\n\n"
+    "    iget-object v1, v0, Landroid/content/pm/ApplicationInfo;->dataDir:Ljava/lang/String;\n\n"
+    "    new-instance v2, Ljava/io/File;\n\n"
+    "    invoke-direct {v2, v1}, Ljava/io/File;-><init>(Ljava/lang/String;)V\n\n"
+    "    invoke-virtual {v2}, Ljava/io/File;->canWrite()Z\n\n"
+    "    move-result v2\n\n"
+    "    if-eqz v2, :repair_env\n\n"
+    "    invoke-static {v15}, Lcom/desktopecho/pideploy/PrefStore;->getEnvDir(Landroid/content/Context;)Ljava/lang/String;\n\n"
+    "    move-result-object v1\n\n"
+    "    new-instance v2, Ljava/io/File;\n\n"
+    "    invoke-direct {v2, v1}, Ljava/io/File;-><init>(Ljava/lang/String;)V\n\n"
+    "    invoke-virtual {v2}, Ljava/io/File;->exists()Z\n\n"
+    "    move-result v1\n\n"
+    "    if-eqz v1, :env_writable\n\n"
+    "    invoke-virtual {v2}, Ljava/io/File;->canWrite()Z\n\n"
+    "    move-result v1\n\n"
+    "    if-eqz v1, :repair_env\n\n"
+    "    goto :env_writable\n\n"
+    "    :repair_env\n"
+    "    new-instance v0, Ljava/util/ArrayList;\n\n"
+    "    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V\n\n"
+    "    new-instance v1, Ljava/lang/StringBuilder;\n\n"
+    "    invoke-direct {v1}, Ljava/lang/StringBuilder;-><init>()V\n\n"
+    '    const-string v2, "chown -R "\n\n'
+    "    invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n"
+    "    invoke-static {}, Landroid/os/Process;->myUid()I\n\n"
+    "    move-result v2\n\n"
+    "    invoke-static {v2}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;\n\n"
+    "    move-result-object v2\n\n"
+    "    invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n"
+    '    const-string v2, ":"\n\n'
+    "    invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n"
+    "    invoke-static {}, Landroid/os/Process;->myUid()I\n\n"
+    "    move-result v2\n\n"
+    "    invoke-static {v2}, Ljava/lang/Integer;->toString(I)Ljava/lang/String;\n\n"
+    "    move-result-object v2\n\n"
+    "    invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n"
+    '    const-string v2, " "\n\n'
+    "    invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n"
+    "    invoke-virtual {v15}, Landroid/content/Context;->getApplicationInfo()Landroid/content/pm/ApplicationInfo;\n\n"
+    "    move-result-object v2\n\n"
+    "    iget-object v2, v2, Landroid/content/pm/ApplicationInfo;->dataDir:Ljava/lang/String;\n\n"
+    "    invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;\n\n"
+    "    invoke-virtual {v1}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;\n\n"
+    "    move-result-object v2\n\n"
+    "    invoke-virtual {v0, v2}, Ljava/util/ArrayList;->add(Ljava/lang/Object;)Z\n\n"
+    "    invoke-static {}, Lcom/desktopecho/pideploy/EnvUtils;->isRooted()Z\n\n"
+    "    move-result v1\n\n"
+    "    if-eqz v1, :env_writable\n\n"
+    '    const-string v1, "su"\n\n'
+    "    invoke-static {v15, v1, v0}, Lcom/desktopecho/pideploy/EnvUtils;->exec(Landroid/content/Context;Ljava/lang/String;Ljava/util/List;)Z\n\n"
+    "    :env_writable\n\n"
+    "    .line 242\n",
+    "EnvUtils.updateEnv storage repair",
+)
+
 # Initialize even when the storage permission is denied: extraction only uses
 # internal storage, so refusing WRITE_EXTERNAL_STORAGE must not leave the app
 # without files/bin/pideploy.
