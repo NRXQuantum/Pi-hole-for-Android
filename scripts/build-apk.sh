@@ -838,7 +838,12 @@ replace_once(
         *) required=1600 ;;
         esac
     fi
-    local available=$(df -k "${CHROOT_DIR}" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
+    local probe="${CHROOT_DIR}"
+    if [ ! -d "${probe}" ]; then
+        probe="${TARGET_PATH%/*}"
+        [ -n "${probe}" -a "${probe}" != "${TARGET_PATH}" ] || probe="."
+    fi
+    local available=$(df -k "${probe}" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
     [ -n "${available}" ] || return 0
     if [ "${available}" -lt "${required}" ]; then
         msg "Not enough free space: ${available} MB available, ${required} MB required."
@@ -857,14 +862,16 @@ do_install()
 
 replace_once(
     rootfs,
-    """    if is_archive "${SOURCE_PATH}" ; then
-        rootfs_import "${SOURCE_PATH}"
-    fi
+    """    msg ":: Installing ${COMPONENT} ... "
+
+    rootfs_make || return 1
 """,
-    """    if is_archive "${SOURCE_PATH}" ; then
-        rootfs_space_check || return 1
-        rootfs_import "${SOURCE_PATH}"
-    fi
+    """    msg ":: Installing ${COMPONENT} ... "
+
+    # Check before rootfs_make: for a directory target it deletes the existing
+    # deployment, and a later failure must not leave an empty container.
+    rootfs_space_check || return 1
+    rootfs_make || return 1
 """,
     "rootfs.do_install space_check",
 )

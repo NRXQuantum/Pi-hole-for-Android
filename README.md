@@ -21,8 +21,8 @@ Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole instal
    directory (including a detached, already-unmounted one) is terminated, so there is only ever one Pi-hole instance.
    **STOP** also works when the mount is gone.
  - **A destructive deploy stops and unmounts first**, instead of extracting over live `proc`/`sys`/`dev` mounts.
- - **Deploy checks free space before downloading/extracting** (1200 MB for the 32-bit image, 1600 MB for the 64-bit
-   image) and fails with a clear message instead of truncating the install.
+ - **Deploy checks free space before it touches the existing deployment** (1200 MB for the 32-bit image, 1600 MB for
+   the 64-bit image) and fails with a clear message instead of deleting the old rootfs or truncating the install.
  - **First-boot provisioning no longer breaks START:** if `android-raspbian` renames an `rc3.d` link while services are
    being started, the renamed entry is skipped instead of failing with `No such file or directory`.
  - **Note:** ports are shared with the Android host. If NetHunter's Kali `sshd` already owns port 22, Pi-hole's Dropbear
