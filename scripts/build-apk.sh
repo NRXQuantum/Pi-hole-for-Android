@@ -843,7 +843,8 @@ replace_once(
         probe="${TARGET_PATH%/*}"
         [ -n "${probe}" -a "${probe}" != "${TARGET_PATH}" ] || probe="."
     fi
-    local available=$(df -k "${probe}" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
+    # -P keeps one line per filesystem; busybox wraps long device names.
+    local available=$(df -P -k "${probe}" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
     [ -n "${available}" ] || return 0
     if [ "${available}" -lt "${required}" ]; then
         msg "Not enough free space: ${available} MB available, ${required} MB required."
