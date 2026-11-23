@@ -66,6 +66,11 @@ ensure_tls_cert() {
         if getent passwd xrdp >/dev/null 2>&1; then
                 adduser xrdp ssl-cert >>/tmp/p4a.log 2>&1
         fi
+        # xrdp runs as the xrdp user and refuses to start with "Could not
+        # start log" if it cannot write its log files.  A fresh extraction
+        # restores them as root:root, so repair them on every boot.
+        chown xrdp:xrdp /var/log/xrdp.log /var/log/xrdp-sesman.log 2>/dev/null
+        chmod 0660 /var/log/xrdp.log /var/log/xrdp-sesman.log 2>/dev/null
 }
 
 case "$1" in

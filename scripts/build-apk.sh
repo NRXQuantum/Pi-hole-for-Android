@@ -556,6 +556,320 @@ replace_once(
 )
 PY
 
+# --- patch the CLI/container lifecycle ----------------------------------
+# A stopped container used to leave daemons behind: rc6.d in the shipped
+# images has no K links for dbus, cron and syslogd, and container_stop()
+# returned early when the container had already been unmounted.  The orphaned
+# processes kept the ports (dropbear/xrdp/pihole-FTL "fail", dnsmasq "Address
+# in use") and kept the old rootfs files alive, so the next deploy deleted a
+# gigabyte of data that was still referenced and then ran out of space
+# mid-extraction (curl: (23) Failure writing output to destination).
+#
+# Kill every process whose root is the container directory before start, after
+# stop, and before a destructive install.  Also make init/sysv tolerate an
+# rc?.d entry that is renamed while it is being started (the first boot's
+# provisioning reorders the links), and refuse to deploy when there is not
+# enough free space for the image.
+echo "==> patching container lifecycle"
+python3 - "$WORK/decoded" <<'PY'
+import pathlib
+import sys
+
+base = pathlib.Path(sys.argv[1])
+
+
+def replace_once(path: pathlib.Path, old: str, new: str, label: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected exactly one match, found {count}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+cli = base / "assets/env/cli.sh"
+
+replace_once(
+    cli,
+    """kill_pids()
+{
+    local pids=$(get_pids $*)
+    if [ -n "${pids}" ]; then
+        kill -9 ${pids}
+        return $?
+    fi
+    return 0
+}
+""",
+    """kill_pids()
+{
+    local pids=$(get_pids $*)
+    if [ -n "${pids}" ]; then
+        kill -9 ${pids}
+        return $?
+    fi
+    return 0
+}
+
+# Absolute roots that identify processes belonging to this container.  The
+# deployment directory (TARGET_PATH) and its mount point (CHROOT_DIR) can be
+# different, and a previous session may have left services running after the
+# container was unmounted, so both have to be checked.
+container_roots()
+{
+    local roots="${CHROOT_DIR%/}"
+    local target="${TARGET_PATH%/}"
+    local base="${ENV_DIR:-$(pwd)}"
+    case "${target}" in
+    /*) ;;
+    *) target="${base%/}/${target#./}" ;;
+    esac
+    target="${target%/}"
+    if [ -n "${target}" -a "${target}" != "${roots}" ]; then
+        roots="${roots} ${target}"
+    fi
+    echo "${roots}"
+}
+
+# Stop services left behind by an earlier start/stop.  rc6.d in the shipped
+# images does not contain K links for every daemon (dbus, cron, syslogd and
+# others survive do_stop), and if the container was already unmounted,
+# container_stop returned early and killed nothing.  Those processes keep the
+# ports and the deleted rootfs files, which makes the next start fail with
+# "Address in use" and makes the next deploy run out of space.
+kill_container_processes()
+{
+    local roots=$(container_roots)
+    local pids=""
+    local pid root
+    for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$')
+    do
+        [ "${pid}" = "$$" ] && continue
+        [ "${pid}" = "${PPID}" ] && continue
+        root=$(readlink "/proc/${pid}/root" 2>/dev/null)
+        [ -n "${root}" ] || continue
+        root="${root% (deleted)}"
+        case " ${roots} " in
+        *" ${root} "*) pids="${pids} ${pid}" ;;
+        esac
+    done
+    [ -n "${pids}" ] || return 0
+
+    msg -n "Stopping stale container processes ... "
+    kill -TERM ${pids} 2>/dev/null
+    local i alive
+    for i in 1 2 3 4 5
+    do
+        sleep 1
+        alive=""
+        for pid in ${pids}
+        do
+            [ -d "/proc/${pid}" ] && alive="${alive} ${pid}"
+        done
+        [ -n "${alive}" ] || { msg "done"; return 0; }
+        pids="${alive}"
+    done
+    kill -9 ${pids} 2>/dev/null
+    sleep 1
+    msg "done"
+    return 0
+}
+""",
+    "cli.kill_container_processes",
+)
+
+replace_once(
+    cli,
+    """    container_mounted || { msg "The container is not mounted." ; return 0; }
+
+    msg -n "Release resources ... \"""",
+    """    container_mounted || { msg "The container is not mounted." ; return 0; }
+
+    kill_container_processes
+
+    msg -n "Release resources ... \"""",
+    "cli.container_umount reap",
+)
+
+replace_once(
+    cli,
+    """container_start()
+{
+    container_mounted || { msg "The container is not mounted." ; return 1; }
+""",
+    """container_start()
+{
+    kill_container_processes
+    container_mounted || { msg "The container is not mounted." ; return 1; }
+""",
+    "cli.container_start reap",
+)
+
+replace_once(
+    cli,
+    """container_stop()
+{
+    container_mounted || { msg "The container is not mounted." ; return 1; }
+
+    DO_ACTION='do_stop'
+    if [ $# -gt 0 ]; then
+        component_exec "$@"
+    else
+        component_exec "${INCLUDE}"
+    fi
+}
+""",
+    """container_stop()
+{
+    if container_mounted; then
+        DO_ACTION='do_stop'
+        if [ $# -gt 0 ]; then
+            component_exec "$@"
+        else
+            component_exec "${INCLUDE}"
+        fi
+    else
+        msg "The container is not mounted."
+    fi
+    # Even if the mount is gone, make sure no daemon from this container is
+    # left running.  Otherwise it keeps the ports and the old rootfs busy.
+    kill_container_processes
+    return 0
+}
+""",
+    "cli.container_stop reap",
+)
+
+replace_once(
+    cli,
+    """    # parse parameters
+    params_parse "$@"
+    shift $((OPTIND-1))
+
+    if [ "${mount_flag}" = "true" ]; then
+        container_mount || exit 1
+    fi
+""",
+    """    # parse parameters
+    params_parse "$@"
+    shift $((OPTIND-1))
+
+    # A destructive install must not run on top of a live container: rm would
+    # fail on proc/sys/dev, services would keep deleted files mapped, and the
+    # extraction would run out of space.  Stop everything and unmount first.
+    if [ "${DO_ACTION#*do_install}" != "${DO_ACTION}" ]; then
+        kill_container_processes
+        container_umount >/dev/null 2>&1
+    fi
+
+    if [ "${mount_flag}" = "true" ]; then
+        container_mount || exit 1
+    fi
+""",
+    "cli.deploy cleanup",
+)
+
+sysv = base / "assets/env/include/init/sysv/deploy.sh"
+
+replace_once(
+    sysv,
+    """    [ -n "${INIT_LEVEL}" ] || return 0
+
+    local services=$(ls "${CHROOT_DIR}/etc/rc${INIT_LEVEL}.d/" | grep '^S')
+""",
+    """    [ -n "${INIT_LEVEL}" ] || return 0
+
+    # A fresh extraction resets ownership of runtime files.  xrdp runs as the
+    # unprivileged xrdp user and refuses to start when it cannot write its log
+    # ("Could not start log"), so restore the ownership the image expects.
+    if [ -d "${CHROOT_DIR}/etc/xrdp" ]; then
+        chroot_exec -u root "/usr/bin/chown xrdp:xrdp /var/log/xrdp.log /var/log/xrdp-sesman.log 2>/dev/null; /usr/bin/chmod 0660 /var/log/xrdp.log /var/log/xrdp-sesman.log 2>/dev/null" >/dev/null 2>&1
+    fi
+
+    local services=$(ls "${CHROOT_DIR}/etc/rc${INIT_LEVEL}.d/" | grep '^S')
+""",
+    "sysv.do_start xrdp log ownership",
+)
+
+replace_once(
+    sysv,
+    """        for item in ${services}
+        do
+            msg -n "${item/S[0-9][0-9]/} ... "
+""",
+    """        for item in ${services}
+        do
+            # The first boot runs android-raspbian, which may reorder the
+            # rc3.d links (e.g. S04p4a-terminal -> S01p4a-terminal) while this
+            # list is being processed.  Do not execute a stale name.
+            [ -e "${CHROOT_DIR}/etc/rc${INIT_LEVEL}.d/${item}" ] || continue
+            msg -n "${item/S[0-9][0-9]/} ... "
+""",
+    "sysv.do_start rename race",
+)
+
+replace_once(
+    sysv,
+    """        for item in ${services}
+        do
+            msg -n "${item/K[0-9][0-9]/} ... "
+""",
+    """        for item in ${services}
+        do
+            [ -e "${CHROOT_DIR}/etc/rc6.d/${item}" ] || continue
+            msg -n "${item/K[0-9][0-9]/} ... "
+""",
+    "sysv.do_stop rename race",
+)
+
+rootfs = base / "assets/env/include/bootstrap/rootfs/deploy.sh"
+
+replace_once(
+    rootfs,
+    """do_install()
+{
+""",
+    """rootfs_space_check()
+{
+    [ "${TARGET_TYPE}" = "directory" ] || return 0
+    local required="${MIN_FREE_MB:-}"
+    if [ -z "${required}" ]; then
+        case "${SOURCE_PATH##*/}" in
+        *32*) required=1200 ;;
+        *) required=1600 ;;
+        esac
+    fi
+    local available=$(df -k "${CHROOT_DIR}" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
+    [ -n "${available}" ] || return 0
+    if [ "${available}" -lt "${required}" ]; then
+        msg "Not enough free space: ${available} MB available, ${required} MB required."
+        msg "Remove unused files or deployments, then deploy again."
+        return 1
+    fi
+    msg "Free space check: ${available} MB available (${required} MB required)"
+    return 0
+}
+
+do_install()
+{
+""",
+    "rootfs.space_check",
+)
+
+replace_once(
+    rootfs,
+    """    if is_archive "${SOURCE_PATH}" ; then
+        rootfs_import "${SOURCE_PATH}"
+    fi
+""",
+    """    if is_archive "${SOURCE_PATH}" ; then
+        rootfs_space_check || return 1
+        rootfs_import "${SOURCE_PATH}"
+    fi
+""",
+    "rootfs.do_install space_check",
+)
+PY
+
 # Version bump (apktool.yml feeds the manifest at build time).
 sed -i -E "s/^  versionCode: .*/  versionCode: ${VERSION_CODE}/" "$WORK/decoded/apktool.yml"
 sed -i -E "s/^  versionName: .*/  versionName: ${VERSION_NAME}/" "$WORK/decoded/apktool.yml"
@@ -573,6 +887,10 @@ grep -q 'busybox_arm64' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/E
 test -s "$WORK/decoded/assets/bin/all/busybox_arm"
 test -s "$WORK/decoded/assets/bin/all/busybox_arm64"
 grep -q 'new-array v0, v0, \[Ljava/lang/String;' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/activity/MainActivity.smali"
+grep -q 'kill_container_processes' "$WORK/decoded/assets/env/cli.sh"
+grep -q 'rootfs_space_check' "$WORK/decoded/assets/env/include/bootstrap/rootfs/deploy.sh"
+grep -q 'Do not execute a stale name' "$WORK/decoded/assets/env/include/init/sysv/deploy.sh"
+grep -q 'xrdp.log' "$WORK/decoded/assets/env/include/init/sysv/deploy.sh"
 
 # --- build --------------------------------------------------------------
 echo "==> building unsigned APK"

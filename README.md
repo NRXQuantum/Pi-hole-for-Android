@@ -7,6 +7,29 @@
 Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole installer on Pi Deploy (a fork of Linux Deploy).  It can be used on **any** rooted Android device with an **ARMv7 or newer CPU** running Android 5.0 (Lolipop) or newer.  Form factor is not important; it could be a phone, tablet, HDMI stick or **any device running Android**.  For very old devices running Android 4.x, see the [Legacy branch](https://github.com/DesktopECHO/Pi-hole-for-Android/tree/legacy)
 
 
+### What's New (November 2026) — v3.2.6
+ - **Fixes the duplicate-service failures seen after a second START or a re-deploy:** `dnsmasq: failed to create listening
+   socket for port 53: Address in use`, `dropbear ... fail`, `xrdp ... fail`,
+   `/etc/rc3.d/S04p4a-terminal: No such file or directory`, and
+   `curl: (23) Failure writing output to destination` during the Pi-hole install.
+ - **Root cause:** the shipped `rc6.d` has no `K` links for every daemon (`dbus`, `cron`, `syslogd` and others survive a
+   normal stop), and **STOP** did nothing at all once the container had already been unmounted. Each **START** therefore
+   left another copy of the services running. A later deploy deleted about 1 GB of rootfs that those processes still had
+   open, so the space was never reclaimed; the install then ran out of disk (`curl: (23)`) and the new instance could not
+   bind ports already held by the old one.
+ - **The app now reaps the container before start, stop and install.** Every process whose root is the container
+   directory (including a detached, already-unmounted one) is terminated, so there is only ever one Pi-hole instance.
+   **STOP** also works when the mount is gone.
+ - **A destructive deploy stops and unmounts first**, instead of extracting over live `proc`/`sys`/`dev` mounts.
+ - **Deploy checks free space before downloading/extracting** (1200 MB for the 32-bit image, 1600 MB for the 64-bit
+   image) and fails with a clear message instead of truncating the install.
+ - **First-boot provisioning no longer breaks START:** if `android-raspbian` renames an `rc3.d` link while services are
+   being started, the renamed entry is skipped instead of failing with `No such file or directory`.
+ - **Note:** ports are shared with the Android host. If NetHunter's Kali `sshd` already owns port 22, Pi-hole's Dropbear
+   cannot bind it; stop the other SSH server or use its console. The same applies to 53/3389 if another deployment is
+   running.
+ - **Same signing key** as v3.2.1–v3.2.5. Update normally; existing deployments are kept. The disk images are unchanged.
+
 ### What's New (November 2026) — v3.2.5
  - **Fixes the `files/bin/pideploy: not found` failure when the app cannot write its own data directory.** On some
    reinstalls, `/data/user/0/com.desktopecho.pideploy` keeps the **previous install's UID**. The new app then cannot
