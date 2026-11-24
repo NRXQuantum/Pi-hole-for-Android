@@ -7,6 +7,18 @@
 Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole installer on Pi Deploy (a fork of Linux Deploy).  It can be used on **any** rooted Android device with an **ARMv7 or newer CPU** running Android 5.0 (Lolipop) or newer.  Form factor is not important; it could be a phone, tablet, HDMI stick or **any device running Android**.  For very old devices running Android 4.x, see the [Legacy branch](https://github.com/DesktopECHO/Pi-hole-for-Android/tree/legacy)
 
 
+### What's New (November 2026) — v3.2.7
+ - **Fixes START doing nothing after the app is closed and reopened.** The app's environment update recursed through
+   the whole `files` directory — including the mounted 2 GB deployment with `proc`, `sys` and `dev` inside it — so the
+   START worker never reached the start command and the environment version was never saved. The recursive permission
+   pass now only covers the files extracted from the APK (`bin`, `web`, `config`, `tmp`, `cli.sh`).
+ - **The SSH port setting now applies to the SSH server that actually runs.** The Raspbian image uses Dropbear, so the
+   configured port is written to `/etc/default/dropbear` before the init scripts start. The unused OpenSSH component no
+   longer starts a second daemon on the same port.
+ - **Tested on the affected device before release:** update over v3.2.6 kept the deployment, START after a cold app
+   launch completed in about 9 seconds, and `ssh -p 2223 android@…` succeeded with `SSH_PORT=2223`.
+ - **Same signing key** as v3.2.1–v3.2.6. The disk images are unchanged.
+
 ### What's New (November 2026) — v3.2.6
  - **Fixes the duplicate-service failures seen after a second START or a re-deploy:** `dnsmasq: failed to create listening
    socket for port 53: Address in use`, `dropbear ... fail`, `xrdp ... fail`,

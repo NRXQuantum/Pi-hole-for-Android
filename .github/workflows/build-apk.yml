@@ -17,13 +17,13 @@ on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: "versionName (e.g. 3.2.6)"
+        description: "versionName (e.g. 3.2.7)"
         required: true
-        default: "3.2.6"
+        default: "3.2.7"
       version_code:
         description: "versionCode (integer, must increase every release)"
         required: true
-        default: "320"
+        default: "321"
       source_path:
         description: "Default disk image URL stored in the APK"
         required: false
