@@ -409,6 +409,118 @@ replace_once(
     "EnvUtils helpers",
 )
 
+# setPermissions(getEnvDir()) recursed into the mounted deployment directory
+# (<files>/raspbian, a 2 GB ext4 image with proc/sys/dev mounted on top).  The
+# ExecService thread that runs "start" therefore never reached the start
+# command: the app looked like START did nothing, and the interrupted update
+# left the environment incomplete so every later start repeated the walk.
+# Restrict the recursive permission pass to the directories that are actually
+# extracted from the APK.
+env_permissions = """
+.method private static setEnvPermissions(Landroid/content/Context;)V
+    .locals 4
+    .param p0, "c"    # Landroid/content/Context;
+
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getBinDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v0
+
+    new-instance v1, Ljava/io/File;
+
+    invoke-direct {v1, v0}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+
+    const/4 v0, 0x1
+
+    invoke-static {v0}, Ljava/lang/Boolean;->valueOf(Z)Ljava/lang/Boolean;
+
+    move-result-object v2
+
+    invoke-static {v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V
+
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getWebDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v0
+
+    new-instance v1, Ljava/io/File;
+
+    invoke-direct {v1, v0}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+
+    invoke-static {v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V
+
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getConfigDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v0
+
+    new-instance v1, Ljava/io/File;
+
+    invoke-direct {v1, v0}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+
+    invoke-static {v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V
+
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getTmpDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v0
+
+    new-instance v1, Ljava/io/File;
+
+    invoke-direct {v1, v0}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+
+    invoke-static {v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V
+
+    new-instance v0, Ljava/lang/StringBuilder;
+
+    invoke-direct {v0}, Ljava/lang/StringBuilder;-><init>()V
+
+    invoke-static {p0}, Lcom/desktopecho/pideploy/PrefStore;->getEnvDir(Landroid/content/Context;)Ljava/lang/String;
+
+    move-result-object v1
+
+    invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    const-string v1, "/cli.sh"
+
+    invoke-virtual {v0, v1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    invoke-virtual {v0}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+
+    move-result-object v0
+
+    new-instance v1, Ljava/io/File;
+
+    invoke-direct {v1, v0}, Ljava/io/File;-><init>(Ljava/lang/String;)V
+
+    invoke-static {v1, v2}, Lcom/desktopecho/pideploy/EnvUtils;->setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V
+
+    return-void
+.end method
+
+"""
+
+replace_once(
+    env_utils,
+    "\n.method private static setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V\n",
+    "\n" + env_permissions.lstrip("\n") + ".method private static setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V\n",
+    "EnvUtils.setEnvPermissions",
+)
+
+replace_once(
+    env_utils,
+    "    new-instance v0, Ljava/io/File;\n\n"
+    "    invoke-static/range {p0 .. p0}, Lcom/desktopecho/pideploy/PrefStore;->getEnvDir(Landroid/content/Context;)Ljava/lang/String;\n\n"
+    "    move-result-object v12\n\n"
+    "    invoke-direct {v0, v12}, Ljava/io/File;-><init>(Ljava/lang/String;)V\n\n"
+    "    move-object v12, v0\n\n"
+    "    .line 287\n"
+    '    .local v12, "binDir":Ljava/io/File;\n'
+    "    invoke-static {v10}, Ljava/lang/Boolean;->valueOf(Z)Ljava/lang/Boolean;\n\n"
+    "    move-result-object v0\n\n"
+    "    invoke-static {v12, v0}, Lcom/desktopecho/pideploy/EnvUtils;->setPermissions(Ljava/io/File;Ljava/lang/Boolean;)V\n",
+    "    invoke-static/range {p0 .. p0}, Lcom/desktopecho/pideploy/EnvUtils;->setEnvPermissions(Landroid/content/Context;)V\n\n"
+    "    .line 287\n"
+    '    .local v12, "binDir":Ljava/io/File;\n',
+    "EnvUtils.updateEnv safe permissions",
+)
+
 # A version marker only means extraction finished; it does not prove the
 # launcher can run.  Rebuild the environment whenever it is incomplete.
 replace_once(
@@ -630,6 +742,24 @@ container_roots()
     echo "${roots}"
 }
 
+# Apply the SSH port from the app profile to the image's Dropbear daemon.
+# The Raspbian image ships Dropbear (with /etc/default/dropbear) and does not
+# use the OpenSSH component, so before this the "SSH port" setting only
+# changed include/extra/ssh and had no effect on the port that answered.
+configure_ssh_port()
+{
+    local conf="${CHROOT_DIR}/etc/default/dropbear"
+    [ -f "${conf}" ] || return 0
+    case "${SSH_PORT}" in
+    ''|*[!0-9]*) return 0 ;;
+    esac
+    [ "${SSH_PORT}" -ge 1 ] 2>/dev/null || return 0
+    [ "${SSH_PORT}" -le 65535 ] 2>/dev/null || return 0
+    msg ":: SSH port: ${SSH_PORT} (Dropbear)"
+    sed -i "/^DROPBEAR_PORT=/d" "${conf}"
+    printf 'DROPBEAR_PORT=%s\n' "${SSH_PORT}" >> "${conf}"
+}
+
 # Stop services left behind by an earlier start/stop.  rc6.d in the shipped
 # images does not contain K links for every daemon (dbus, cron, syslogd and
 # others survive do_stop), and if the container was already unmounted,
@@ -700,8 +830,32 @@ replace_once(
 {
     kill_container_processes
     container_mounted || { msg "The container is not mounted." ; return 1; }
+
+    configure_ssh_port
 """,
-    "cli.container_start reap",
+    "cli.container_start ssh port",
+)
+
+# The image's Dropbear is the SSH server that actually runs.  Starting the
+# OpenSSH component on the same port would make one of the two daemons fail
+# with "Address already in use", so let Dropbear own SSH on this image.
+replace_once(
+    base / "assets/env/include/extra/ssh/deploy.sh",
+    """do_start()
+{
+    msg -n ":: Starting ${COMPONENT} ... "
+    is_stopped /var/run/sshd.pid /run/sshd.pid
+""",
+    """do_start()
+{
+    msg -n ":: Starting ${COMPONENT} ... "
+    if [ -f "${CHROOT_DIR}/etc/default/dropbear" ]; then
+        msg "skip (Dropbear handles SSH)"
+        return 0
+    fi
+    is_stopped /var/run/sshd.pid /run/sshd.pid
+""",
+    "extra/ssh dropbear skip",
 )
 
 replace_once(
@@ -887,6 +1041,9 @@ grep -q '<string name="is_telnet">true</string>' "$WORK/decoded/res/values/strin
 grep -q '<string name="is_http">true</string>' "$WORK/decoded/res/values/strings.xml"
 grep -q "const-string v0, \"${VERSION_NAME}-${VERSION_CODE}\"" "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/PrefStore.smali"
 grep -q 'envIntact' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q 'setEnvPermissions' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
+grep -q 'configure_ssh_port' "$WORK/decoded/assets/env/cli.sh"
+grep -q 'Dropbear handles SSH' "$WORK/decoded/assets/env/include/extra/ssh/deploy.sh"
 grep -q ':env_ready' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
 grep -q '#!/system/bin/sh' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
 grep -q 'cannot execute a bundled busybox' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
