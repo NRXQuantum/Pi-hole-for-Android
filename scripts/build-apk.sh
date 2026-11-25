@@ -750,6 +750,22 @@ container_roots()
 # port that actually answered never changed.
 ssh_enabled()
 {
+    # The app's SSH switch is stored in properties_conf.xml.  The profile's
+    # INCLUDE list is not rewritten when the switch is toggled for an existing
+    # deployment, so prefer the preference and only fall back to INCLUDE when
+    # the preference file is not available.
+    if [ -n "${ENV_DIR}" ]; then
+        local prefs="${ENV_DIR%/}"
+        prefs="${prefs%/*}/shared_prefs/properties_conf.xml"
+        if [ -f "${prefs}" ]; then
+            if grep -q '<boolean name="is_ssh" value="true"' "${prefs}"; then
+                return 0
+            fi
+            if grep -q '<boolean name="is_ssh" value="false"' "${prefs}"; then
+                return 1
+            fi
+        fi
+    fi
     case " ${INCLUDE} " in
     *" extra/ssh "*) return 0 ;;
     esac
