@@ -742,22 +742,57 @@ container_roots()
     echo "${roots}"
 }
 
-# Apply the SSH port from the app profile to the image's Dropbear daemon.
-# The Raspbian image ships Dropbear (with /etc/default/dropbear) and does not
-# use the OpenSSH component, so before this the "SSH port" setting only
-# changed include/extra/ssh and had no effect on the port that answered.
-configure_ssh_port()
+# Apply the SSH switch and port from the app profile to the image's Dropbear.
+# The Raspbian image starts Dropbear from its SysV links regardless of the
+# optional OpenSSH component, so turning SSH off has to remove those start
+# links; otherwise Dropbear keeps listening even though the app says SSH is
+# off.  The port likewise only reached include/extra/ssh before this, so the
+# port that actually answered never changed.
+ssh_enabled()
+{
+    case " ${INCLUDE} " in
+    *" extra/ssh "*) return 0 ;;
+    esac
+    return 1
+}
+
+configure_ssh()
 {
     local conf="${CHROOT_DIR}/etc/default/dropbear"
-    [ -f "${conf}" ] || return 0
-    case "${SSH_PORT}" in
-    ''|*[!0-9]*) return 0 ;;
-    esac
-    [ "${SSH_PORT}" -ge 1 ] 2>/dev/null || return 0
-    [ "${SSH_PORT}" -le 65535 ] 2>/dev/null || return 0
-    msg ":: SSH port: ${SSH_PORT} (Dropbear)"
-    sed -i "/^DROPBEAR_PORT=/d" "${conf}"
-    printf 'DROPBEAR_PORT=%s\n' "${SSH_PORT}" >> "${conf}"
+    local init="${CHROOT_DIR}/etc/init.d/dropbear"
+    local level
+
+    if ssh_enabled; then
+        msg ":: SSH: enabled (Dropbear)"
+    else
+        msg ":: SSH: disabled (Dropbear)"
+    fi
+
+    if [ -f "${conf}" ]; then
+        case "${SSH_PORT}" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "${SSH_PORT}" -ge 1 ] 2>/dev/null && [ "${SSH_PORT}" -le 65535 ] 2>/dev/null; then
+                msg ":: SSH port: ${SSH_PORT} (Dropbear)"
+                sed -i "/^DROPBEAR_PORT=/d" "${conf}"
+                printf 'DROPBEAR_PORT=%s\n' "${SSH_PORT}" >> "${conf}"
+            fi
+            ;;
+        esac
+    fi
+
+    for level in 2 3 4 5
+    do
+        [ -d "${CHROOT_DIR}/etc/rc${level}.d" ] || continue
+        if ssh_enabled; then
+            set -- "${CHROOT_DIR}/etc/rc${level}.d"/S??dropbear
+            if [ ! -e "$1" ] && [ -f "${init}" ]; then
+                ln -s ../init.d/dropbear "${CHROOT_DIR}/etc/rc${level}.d/S03dropbear"
+            fi
+        else
+            rm -f "${CHROOT_DIR}/etc/rc${level}.d"/S??dropbear
+        fi
+    done
 }
 
 # Stop services left behind by an earlier start/stop.  rc6.d in the shipped
@@ -831,9 +866,9 @@ replace_once(
     kill_container_processes
     container_mounted || { msg "The container is not mounted." ; return 1; }
 
-    configure_ssh_port
+    configure_ssh
 """,
-    "cli.container_start ssh port",
+    "cli.container_start ssh",
 )
 
 # The image's Dropbear is the SSH server that actually runs.  Starting the
@@ -1042,7 +1077,9 @@ grep -q '<string name="is_http">true</string>' "$WORK/decoded/res/values/strings
 grep -q "const-string v0, \"${VERSION_NAME}-${VERSION_CODE}\"" "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/PrefStore.smali"
 grep -q 'envIntact' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
 grep -q 'setEnvPermissions' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
-grep -q 'configure_ssh_port' "$WORK/decoded/assets/env/cli.sh"
+grep -q 'configure_ssh' "$WORK/decoded/assets/env/cli.sh"
+grep -q 'SSH: disabled (Dropbear)' "$WORK/decoded/assets/env/cli.sh"
+grep -q 'S??dropbear' "$WORK/decoded/assets/env/cli.sh"
 grep -q 'Dropbear handles SSH' "$WORK/decoded/assets/env/include/extra/ssh/deploy.sh"
 grep -q ':env_ready' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"
 grep -q '#!/system/bin/sh' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/EnvUtils.smali"

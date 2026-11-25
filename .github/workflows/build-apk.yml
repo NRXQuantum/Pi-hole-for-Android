@@ -19,11 +19,11 @@ on:
       version_name:
         description: "versionName (e.g. 3.2.7)"
         required: true
-        default: "3.2.7"
+        default: "3.2.8"
       version_code:
         description: "versionCode (integer, must increase every release)"
         required: true
-        default: "321"
+        default: "322"
       source_path:
         description: "Default disk image URL stored in the APK"
         required: false
