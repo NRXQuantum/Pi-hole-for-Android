@@ -7,6 +7,17 @@
 Pi-hole for Android is a Debian disk image tuned to work with the Pi-hole installer on Pi Deploy (a fork of Linux Deploy).  It can be used on **any** rooted Android device with an **ARMv7 or newer CPU** running Android 5.0 (Lolipop) or newer.  Form factor is not important; it could be a phone, tablet, HDMI stick or **any device running Android**.  For very old devices running Android 4.x, see the [Legacy branch](https://github.com/DesktopECHO/Pi-hole-for-Android/tree/legacy)
 
 
+### What's New (November 2026) — v3.2.9
+ - **The SSH switch keeps the state you chose.** Opening Properties used to re-import the stored profile, whose stale
+   `INCLUDE` list flipped the switch back on. The profile is now loaded only when the profile changes, every switch
+   change is saved immediately, and a profile without `extra/ssh` now really turns the switch off.
+ - **START and STOP show the real container state.** `cli.sh` records the container's chroot PIDs in
+   `files/run/container.pids`; the main screen checks that those PIDs are still alive and shows STOP while they are,
+   START when they are not. The button no longer depends on a guess made at launch.
+ - **SSH off means no Dropbear.** Verified after a STOP/START cycle: with the switch off there is no Dropbear process
+   and no listener on the configured port, while Pi-hole DNS, the web interface and xrdp still start normally.
+ - **Same signing key** as v3.2.1–v3.2.8. The disk images are unchanged.
+
 ### What's New (November 2026) — v3.2.8
  - **The SSH switch now really turns SSH off.** The Raspbian image starts Dropbear from its SysV start links independently
    of the app's optional OpenSSH component, so with the switch off Dropbear still listened on the configured port. Before
