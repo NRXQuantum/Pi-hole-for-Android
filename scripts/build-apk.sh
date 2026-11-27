@@ -1083,6 +1083,13 @@ replace_once(
 )
 PY
 
+# --- patch the running-state UI and SSH preference persistence -----------
+# The Properties screen re-imported the profile on every open, so a stale
+# INCLUDE list flipped the SSH checkbox back on.  The START button was also
+# offered based on a guess instead of the real container state.
+echo "==> patching running-state UI"
+python3 "$ROOT/scripts/patch-running-state.py" "$WORK/decoded"
+
 # Version bump (apktool.yml feeds the manifest at build time).
 sed -i -E "s/^  versionCode: .*/  versionCode: ${VERSION_CODE}/" "$WORK/decoded/apktool.yml"
 sed -i -E "s/^  versionName: .*/  versionName: ${VERSION_NAME}/" "$WORK/decoded/apktool.yml"
@@ -1109,6 +1116,11 @@ grep -q 'kill_container_processes' "$WORK/decoded/assets/env/cli.sh"
 grep -q 'rootfs_space_check' "$WORK/decoded/assets/env/include/bootstrap/rootfs/deploy.sh"
 grep -q 'Do not execute a stale name' "$WORK/decoded/assets/env/include/init/sysv/deploy.sh"
 grep -q 'xrdp.log' "$WORK/decoded/assets/env/include/init/sysv/deploy.sh"
+grep -q 'hasLiveContainerProcess' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/activity/MainActivity.smali"
+grep -q 'refreshContainerState' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/activity/MainActivity.smali"
+test -s "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/activity/ContainerStateRunnable.smali"
+grep -q 'container_state_file' "$WORK/decoded/assets/env/cli.sh"
+grep -q 'PrefStore;->restoreProperties' "$WORK/decoded/smali_classes2/com/desktopecho/pideploy/PrefStore.smali"
 
 # --- build --------------------------------------------------------------
 echo "==> building unsigned APK"
