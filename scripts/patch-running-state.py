@@ -55,7 +55,7 @@ methods = '''# --- container running-state helpers -----------------------------
 
     move-result v2
 
-    if-nez v2, :try_end_0
+    if-eqz v2, :try_end_0
 
     new-instance v2, Ljava/io/BufferedReader;
 
@@ -85,7 +85,7 @@ methods = '''# --- container running-state helpers -----------------------------
 
     move-result v4
 
-    if-eqz v4, :goto_0
+    if-nez v4, :goto_0
 
     invoke-static {v3}, Ljava/lang/Integer;->parseInt(Ljava/lang/String;)I
 
@@ -113,7 +113,7 @@ methods = '''# --- container running-state helpers -----------------------------
 
     move-result v6
 
-    if-nez v6, :goto_0
+    if-eqz v6, :goto_0
 
     invoke-virtual {v2}, Ljava/io/BufferedReader;->close()V
 
